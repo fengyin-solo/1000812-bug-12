@@ -30,6 +30,13 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出航次管理清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "voyage", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条航次明细；不存在时给出可读的错误说明。"""
@@ -39,13 +46,39 @@ def get_entry(entry_id: int) -> dict:
     return entry
 
 
+@router.get("/{entry_id}/attachments")
+def get_attachments(entry_id: int) -> dict[str, Any]:
+    """列出挂在该航次下的装卸任务、理货单、单证，供详情查看与删除前核对。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"航次 {entry_id} 不存在或已归档")
+    attached = service.attached_documents(entry)
+    return {"entry": entry, "attached": attached, "attached_count": len(attached)}
+
+
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
-    """登记一条航次，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
-    if missing:
-        return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
+    """登记一条航次，缺字段或与既有航次重号时说明原因而不是静默丢弃。"""
+    entry, error = service.create_entry(payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=error)
     return ActionResult(ok=True, message="航次已登记", entry=entry)
+
+
+@router.put("/{entry_id}", response_model=ActionResult)
+def update_entry(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """原地修改航次（如更换关联船舶）：id 不变，保存后列表、详情与接口读到同一条。"""
+    entry, error = service.update_entry(entry_id, payload.values)
+    if entry is None:
+        return ActionResult(ok=False, message=error)
+    return ActionResult(ok=True, message="航次已保存", entry=entry)
+
+
+@router.delete("/{entry_id}", response_model=ActionResult)
+def delete_entry(entry_id: int) -> ActionResult:
+    """删除航次：挂着装卸任务、理货单、单证时拒绝删除并逐份列出，绝不连带丢单据。"""
+    ok, message = service.delete_entry(entry_id)
+    return ActionResult(ok=ok, message=message)
 
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
@@ -56,10 +89,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出航次管理清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "voyage", "total": total, "items": items}
